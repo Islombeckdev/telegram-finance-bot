@@ -73,9 +73,10 @@ async def ask_question(update: Update, question_key: str):
     question_text = question_data['text']
     question_type = question_data['type']
     
-    # Progress bar qo'shish
+    # Progress indicator (sodda)
     current_index = config.QUESTION_ORDER.index(question_key)
-    progress = utils.create_progress_bar(current_index + 1, len(config.QUESTION_ORDER))
+    total = len(config.QUESTION_ORDER)
+    progress = f"[{current_index + 1}/{total}]"
     
     message_text = f"{progress}\n\n{question_text}"
     
@@ -267,7 +268,8 @@ async def handle_multi_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             question_text = question_data['text']
             
             current_index = config.QUESTION_ORDER.index(next_question)
-            progress = utils.create_progress_bar(current_index + 1, len(config.QUESTION_ORDER))
+            total = len(config.QUESTION_ORDER)
+            progress = f"[{current_index + 1}/{total}]"
             
             await query.message.reply_text(
                 f"{progress}\n\n{question_text}",
