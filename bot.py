@@ -123,6 +123,7 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Agar "Qaytadan boshlash" bosilsa
     if answer_text == '🔄 Qaytadan boshlash':
+        data_manager.reset_user_data(user.id)
         return await start_survey(update, context)
     
     # Agar "Oxirgi tahlilni ko'rish" bosilsa
@@ -137,6 +138,12 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("Tahlil topilmadi.")
         
+        keyboard = [['/start']]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text(
+            "Yangi so'rovnoma uchun /start bosing.",
+            reply_markup=reply_markup
+        )
         return ConversationHandler.END
     
     # Agar "Boshlaymiz" bosilsa
