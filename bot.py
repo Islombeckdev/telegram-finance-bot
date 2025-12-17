@@ -79,11 +79,11 @@ async def start_survey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Ask first question
     question_key = config.QUESTION_ORDER[0]
-    await ask_question(update, user.id, question_key)
+    await ask_question(update, user.id, question_key, context)
     
     return ANSWERING
 
-async def ask_question(update: Update, user_id: int, question_key: str):
+async def ask_question(update: Update, user_id: int, question_key: str, context: ContextTypes.DEFAULT_TYPE = None):
     """Ask a question based on type"""
     question_data = get_question(user_id, question_key)
     question_text = question_data['text']
@@ -96,6 +96,11 @@ async def ask_question(update: Update, user_id: int, question_key: str):
     
     message_text = f"{progress}\n\n{question_text}"
     
+    # Initialize multi_selected if needed
+    if context and question_type == 'inline_multi_choice':
+        if 'multi_selected' not in context.user_data:
+            context.user_data['multi_selected'] = []
+    
     # Create appropriate keyboard based on type
     if question_type == 'inline_choice':
         # Single choice inline keyboard
@@ -107,12 +112,10 @@ async def ask_question(update: Update, user_id: int, question_key: str):
     
     elif question_type == 'inline_multi_choice':
         # Multiple choice inline keyboard
-        if 'multi_selected' not in context.user_data:
-            context.user_data['multi_selected'] = []
-        
         keyboard = []
+        selected = context.user_data.get('multi_selected', []) if context else []
         for option in question_data['options']:
-            check = "✅ " if option in context.user_data.get('multi_selected', []) else ""
+            check = "✅ " if option in selected else ""
             keyboard.append([InlineKeyboardButton(f"{check}{option}", callback_data=f"multi_{question_key}_{option}")])
         keyboard.append([InlineKeyboardButton("➡️ Keyingisi", callback_data=f"multi_done_{question_key}")])
         
@@ -384,7 +387,7 @@ async def handle_text_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
         next_question = skip_conditional_questions(user.id, next_question)
         
         if next_question:
-            await ask_question(update, user.id, next_question)
+            await ask_question(update, user.id, next_question, context)
             return ANSWERING
         else:
             await show_completion(update, user.id)
