@@ -6,353 +6,434 @@ from data_manager import DataManager
 from ai_analyzer import AIAnalyzer
 import utils
 
-# Logging sozlamalari
+# Logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Holatlar
+# States
 ANSWERING = 1
 
-# Global obyektlar
+# Global objects
 data_manager = DataManager()
 ai_analyzer = AIAnalyzer()
 
+# User language storage (default: uz)
+user_languages = {}
+
+def get_user_lang(user_id):
+    """Get user's language (default: uz)"""
+    return user_languages.get(user_id, 'uz')
+
+def get_text(user_id, key):
+    """Get text in user's language"""
+    lang = get_user_lang(user_id)
+    return config.TEXTS.get(lang, config.TEXTS['uz']).get(key, '')
+
+def get_question(user_id, question_key):
+    """Get question in user's language"""
+    lang = get_user_lang(user_id)
+    return config.QUESTIONS.get(lang, config.QUESTIONS['uz']).get(question_key, {})
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bot boshlash /start"""
+    """Bot start /start"""
     user = update.effective_user
     
-    # Agar avvalgi sessiya bo'lsa
+    # Check if user already completed
     if data_manager.is_completed(user.id):
-        keyboard = [
-            ['🔄 Qaytadan boshlash', '📊 Oxirgi tahlilni ko\'rish']
-        ]
+        keyboard = [['📊 Yangi tahlil qilish']]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
         await update.message.reply_text(
             "Siz allaqachon so'rovnomani to'ldirgan ekansiz!\n\n"
-            "Nima qilishni xohlaysiz?",
+            "Yangi tahlil qilish uchun tugmani bosing.",
             reply_markup=reply_markup
         )
         return ConversationHandler.END
     
-    # Yangi foydalanuvchi
+    # Welcome message
     await update.message.reply_text(
-        config.TEXTS['welcome'],
+        get_text(user.id, 'welcome'),
         parse_mode='Markdown'
     )
     
+    # Start button
     keyboard = [['🚀 Boshlaymiz']]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
     
     await update.message.reply_text(
-        config.TEXTS['start_survey'],
+        get_text(user.id, 'start_survey'),
         reply_markup=reply_markup
     )
     
     return ANSWERING
 
 async def start_survey(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """So'rovnomani boshlash"""
+    """Start survey"""
     user = update.effective_user
     
-    # Foydalanuvchi ma'lumotlarini tozalash (yangi sessiya)
+    # Reset user data
     data_manager.reset_user_data(user.id)
     
-    # Birinchi savolni berish
+    # Ask first question
     question_key = config.QUESTION_ORDER[0]
-    await ask_question(update, question_key)
+    await ask_question(update, user.id, question_key)
     
     return ANSWERING
 
-async def ask_question(update: Update, question_key: str):
-    """Savolni berish"""
-    question_data = config.QUESTIONS[question_key]
+async def ask_question(update: Update, user_id: int, question_key: str):
+    """Ask a question based on type"""
+    question_data = get_question(user_id, question_key)
     question_text = question_data['text']
     question_type = question_data['type']
     
-    # Progress indicator (sodda)
+    # Progress indicator
     current_index = config.QUESTION_ORDER.index(question_key)
     total = len(config.QUESTION_ORDER)
     progress = f"[{current_index + 1}/{total}]"
     
     message_text = f"{progress}\n\n{question_text}"
     
-    # Savol turiga qarab klaviatura
-    if question_type == 'choice':
-        keyboard = [[option] for option in question_data['options']]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
-    
-    elif question_type == 'multi_choice':
-        # Inline keyboard (bir nechta tanlov)
+    # Create appropriate keyboard based on type
+    if question_type == 'inline_choice':
+        # Single choice inline keyboard
         keyboard = []
         for option in question_data['options']:
-            keyboard.append([InlineKeyboardButton(f"☐ {option}", callback_data=f"toggle_{option}")])
-        keyboard.append([InlineKeyboardButton("✅ Tayyor", callback_data="multi_done")])
+            keyboard.append([InlineKeyboardButton(option, callback_data=f"choice_{question_key}_{option}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    elif question_type == 'inline_multi_choice':
+        # Multiple choice inline keyboard
+        if 'multi_selected' not in context.user_data:
+            context.user_data['multi_selected'] = []
+        
+        keyboard = []
+        for option in question_data['options']:
+            check = "✅ " if option in context.user_data.get('multi_selected', []) else ""
+            keyboard.append([InlineKeyboardButton(f"{check}{option}", callback_data=f"multi_{question_key}_{option}")])
+        keyboard.append([InlineKeyboardButton("➡️ Keyingisi", callback_data=f"multi_done_{question_key}")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Context'ga saqlash
-        if 'multi_choices' not in update._effective_message._bot_data:
-            update._effective_message._bot_data['multi_choices'] = []
-        
         await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
     
-    elif question_type == 'rating':
+    elif question_type == 'inline_rating':
+        # Rating 1-10
         keyboard = [
-            ['1', '2', '3', '4', '5'],
-            ['6', '7', '8', '9', '10']
+            [InlineKeyboardButton(str(i), callback_data=f"rating_{question_key}_{i}") for i in range(1, 6)],
+            [InlineKeyboardButton(str(i), callback_data=f"rating_{question_key}_{i}") for i in range(6, 11)]
         ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    elif question_type == 'currency' or question_type == 'number':
+        # Text input required
+        await update.message.reply_text(
+            message_text,
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode='Markdown'
+        )
     
     else:
-        # Oddiy matn yoki raqam
+        # Default: text input
         await update.message.reply_text(
-            message_text, 
+            message_text,
             reply_markup=ReplyKeyboardRemove(),
             parse_mode='Markdown'
         )
 
-async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Javobni qayta ishlash"""
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = query.from_user
+    data = query.data
+    
+    # Parse callback data
+    if data.startswith('choice_'):
+        # Single choice
+        parts = data.split('_', 2)
+        question_key = parts[1]
+        answer = parts[2]
+        
+        # Save answer
+        await save_and_continue(query, user.id, question_key, answer)
+    
+    elif data.startswith('multi_'):
+        # Multiple choice
+        if data.startswith('multi_done_'):
+            # User finished selecting
+            question_key = data.replace('multi_done_', '')
+            selected = context.user_data.get('multi_selected', [])
+            answer = ', '.join(selected) if selected else 'Hech narsa'
+            
+            # Clear selection
+            context.user_data['multi_selected'] = []
+            
+            # Save and continue
+            await save_and_continue(query, user.id, question_key, answer)
+        else:
+            # Toggle selection
+            parts = data.split('_', 2)
+            question_key = parts[1]
+            option = parts[2]
+            
+            if 'multi_selected' not in context.user_data:
+                context.user_data['multi_selected'] = []
+            
+            if option in context.user_data['multi_selected']:
+                context.user_data['multi_selected'].remove(option)
+            else:
+                context.user_data['multi_selected'].append(option)
+            
+            # Update keyboard
+            question_data = get_question(user.id, question_key)
+            keyboard = []
+            for opt in question_data['options']:
+                check = "✅ " if opt in context.user_data['multi_selected'] else ""
+                keyboard.append([InlineKeyboardButton(f"{check}{opt}", callback_data=f"multi_{question_key}_{opt}")])
+            keyboard.append([InlineKeyboardButton("➡️ Keyingisi", callback_data=f"multi_done_{question_key}")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_reply_markup(reply_markup=reply_markup)
+    
+    elif data.startswith('rating_'):
+        # Rating selection
+        parts = data.split('_')
+        question_key = parts[1]
+        rating = parts[2]
+        
+        await save_and_continue(query, user.id, question_key, rating)
+
+async def save_and_continue(query_or_update, user_id: int, question_key: str, answer: str):
+    """Save answer and move to next question"""
+    # Save answer
+    user_info = {
+        'username': query_or_update.from_user.username if hasattr(query_or_update, 'from_user') else None,
+        'first_name': query_or_update.from_user.first_name if hasattr(query_or_update, 'from_user') else None,
+    }
+    
+    data_manager.save_answer(user_id, question_key, answer, user_info)
+    
+    # Check if completed
+    if data_manager.is_completed(user_id):
+        await show_completion(query_or_update, user_id)
+        return ConversationHandler.END
+    else:
+        # Get next question
+        next_question = data_manager.get_current_question(user_id)
+        
+        # Skip conditional questions
+        next_question = skip_conditional_questions(user_id, next_question)
+        
+        if next_question:
+            # Send next question as new message (not edit)
+            if hasattr(query_or_update, 'message'):
+                # It's a callback query
+                await ask_question_callback(query_or_update, user_id, next_question)
+            else:
+                # It's a regular update
+                await ask_question(query_or_update, user_id, next_question)
+        else:
+            # All done
+            await show_completion(query_or_update, user_id)
+            return ConversationHandler.END
+
+async def ask_question_callback(query, user_id: int, question_key: str):
+    """Ask question after callback (as new message)"""
+    question_data = get_question(user_id, question_key)
+    question_text = question_data['text']
+    question_type = question_data['type']
+    
+    # Progress
+    current_index = config.QUESTION_ORDER.index(question_key)
+    total = len(config.QUESTION_ORDER)
+    progress = f"[{current_index + 1}/{total}]"
+    
+    message_text = f"{progress}\n\n{question_text}"
+    
+    # Send as new message
+    if question_type == 'inline_choice':
+        keyboard = []
+        for option in question_data['options']:
+            keyboard.append([InlineKeyboardButton(option, callback_data=f"choice_{question_key}_{option}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    elif question_type == 'inline_multi_choice':
+        keyboard = []
+        for option in question_data['options']:
+            keyboard.append([InlineKeyboardButton(option, callback_data=f"multi_{question_key}_{option}")])
+        keyboard.append([InlineKeyboardButton("➡️ Keyingisi", callback_data=f"multi_done_{question_key}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    elif question_type == 'inline_rating':
+        keyboard = [
+            [InlineKeyboardButton(str(i), callback_data=f"rating_{question_key}_{i}") for i in range(1, 6)],
+            [InlineKeyboardButton(str(i), callback_data=f"rating_{question_key}_{i}") for i in range(6, 11)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    else:
+        await query.message.reply_text(message_text, parse_mode='Markdown')
+
+def skip_conditional_questions(user_id: int, question_key: str) -> str:
+    """Skip conditional questions based on previous answers"""
+    answers = data_manager.get_all_answers(user_id)
+    
+    # Skip savings_amount if no savings
+    if question_key == 'savings_amount':
+        has_savings = answers.get('has_savings', '')
+        if '❌' in has_savings or 'Yo\'q' in has_savings:
+            # Skip this question
+            current_idx = config.QUESTION_ORDER.index(question_key)
+            if current_idx + 1 < len(config.QUESTION_ORDER):
+                return skip_conditional_questions(user_id, config.QUESTION_ORDER[current_idx + 1])
+            return None
+    
+    # Skip debt questions if no debt
+    if question_key in ['debt_monthly', 'debt_months']:
+        debt_status = answers.get('debt_status', '')
+        if '❌' in debt_status or 'Yo\'q' in debt_status:
+            current_idx = config.QUESTION_ORDER.index(question_key)
+            if current_idx + 1 < len(config.QUESTION_ORDER):
+                return skip_conditional_questions(user_id, config.QUESTION_ORDER[current_idx + 1])
+            return None
+    
+    return question_key
+
+async def handle_text_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text input answers"""
     user = update.effective_user
     answer_text = update.message.text
     
-    # Agar "Qaytadan boshlash" bosilsa
-    if answer_text == '🔄 Qaytadan boshlash':
+    # Special buttons
+    if answer_text == '📊 Yangi tahlil qilish':
         data_manager.reset_user_data(user.id)
         return await start_survey(update, context)
     
-    # Agar "Oxirgi tahlilni ko'rish" bosilsa
-    if answer_text == '📊 Oxirgi tahlilni ko\'rish':
-        user_data = data_manager.load_user_data(user.id)
-        analysis = user_data.get('ai_analysis')
-        
-        if analysis:
-            chunks = utils.split_text_into_chunks(analysis)
-            for chunk in chunks:
-                await update.message.reply_text(chunk, parse_mode='Markdown')
-        else:
-            await update.message.reply_text("Tahlil topilmadi.")
-        
-        keyboard = [['/start']]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text(
-            "Yangi so'rovnoma uchun /start bosing.",
-            reply_markup=reply_markup
-        )
-        return ConversationHandler.END
-    
-    # Agar "Boshlaymiz" bosilsa
     if answer_text == '🚀 Boshlaymiz':
         return await start_survey(update, context)
     
-    # Joriy savolni olish
-    question_key = data_manager.get_current_question(user.id)
+    if answer_text == '🔄 Qayta hisoblash':
+        data_manager.reset_user_data(user.id)
+        return await start_survey(update, context)
     
-    if not question_key:
-        await update.message.reply_text("Xatolik yuz berdi. /start bosing.")
-        return ConversationHandler.END
-    
-    question_data = config.QUESTIONS[question_key]
-    question_type = question_data['type']
-    
-    # Javobni validatsiya qilish
-    validated_answer = validate_answer(answer_text, question_type)
-    
-    if validated_answer is None and question_type in ['number', 'rating']:
+    if answer_text == '📅 2026 uchun reja':
         await update.message.reply_text(
-            "❌ Iltimos, to'g'ri formatda kiriting.\n\n" + question_data['text'],
-            parse_mode='Markdown'
+            "🎯 2026 yil uchun reja funksiyasi tez orada qo'shiladi!\n\n"
+            "Hozircha /start bilan yangi tahlil qilishingiz mumkin."
         )
         return ANSWERING
     
-    # Javobni saqlash
+    # Get current question
+    question_key = data_manager.get_current_question(user.id)
+    
+    if not question_key:
+        await update.message.reply_text(get_text(user.id, 'error'))
+        return ConversationHandler.END
+    
+    # Skip conditional questions
+    question_key = skip_conditional_questions(user.id, question_key)
+    
+    if not question_key:
+        await show_completion(update, user.id)
+        return ConversationHandler.END
+    
+    question_data = get_question(user.id, question_key)
+    question_type = question_data['type']
+    
+    # Validate based on type
+    validated_answer = None
+    
+    if question_type == 'currency':
+        validated_answer = utils.parse_currency(answer_text)
+        if validated_answer is None:
+            await update.message.reply_text(get_text(user.id, 'number_required'))
+            return ANSWERING
+    
+    elif question_type == 'number':
+        try:
+            validated_answer = int(answer_text.strip())
+        except:
+            await update.message.reply_text("⚠️ Iltimos, raqam kiriting (masalan: 12)")
+            return ANSWERING
+    
+    else:
+        validated_answer = answer_text.strip()
+    
+    # Save answer
     user_info = {
         'username': user.username,
         'first_name': user.first_name,
-        'language_code': user.language_code
     }
     
-    data_manager.save_answer(user.id, question_key, validated_answer or answer_text, user_info)
+    data_manager.save_answer(user.id, question_key, str(validated_answer), user_info)
     
-    # Keyingi savolga o'tish yoki tahlil
+    # Check if completed
     if data_manager.is_completed(user.id):
         await show_completion(update, user.id)
         return ConversationHandler.END
     else:
         next_question = data_manager.get_current_question(user.id)
-        await ask_question(update, next_question)
-        return ANSWERING
-
-def validate_answer(answer: str, question_type: str):
-    """Javobni validatsiya qilish"""
-    if question_type == 'number':
-        return utils.parse_number(answer)
-    elif question_type == 'rating':
-        return utils.validate_rating(answer)
-    else:
-        return utils.clean_text(answer)
-
-async def handle_multi_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ko'p tanlovli savollar uchun"""
-    query = update.callback_query
-    await query.answer()
-    
-    user = update.effective_user
-    data = query.data
-    
-    if 'multi_choices' not in context.bot_data:
-        context.bot_data['multi_choices'] = {}
-    
-    if user.id not in context.bot_data['multi_choices']:
-        context.bot_data['multi_choices'][user.id] = []
-    
-    if data.startswith('toggle_'):
-        option = data.replace('toggle_', '')
+        next_question = skip_conditional_questions(user.id, next_question)
         
-        # Toggle
-        if option in context.bot_data['multi_choices'][user.id]:
-            context.bot_data['multi_choices'][user.id].remove(option)
-        else:
-            context.bot_data['multi_choices'][user.id].append(option)
-        
-        # Klaviaturani yangilash
-        question_key = data_manager.get_current_question(user.id)
-        question_data = config.QUESTIONS[question_key]
-        
-        keyboard = []
-        for opt in question_data['options']:
-            check = "☑" if opt in context.bot_data['multi_choices'][user.id] else "☐"
-            keyboard.append([InlineKeyboardButton(f"{check} {opt}", callback_data=f"toggle_{opt}")])
-        keyboard.append([InlineKeyboardButton("✅ Tayyor", callback_data="multi_done")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_reply_markup(reply_markup=reply_markup)
-    
-    elif data == 'multi_done':
-        selected = context.bot_data['multi_choices'].get(user.id, [])
-        
-        if not selected:
-            await query.message.reply_text("⚠️ Kamida bitta variant tanlang!")
+        if next_question:
+            await ask_question(update, user.id, next_question)
             return ANSWERING
-        
-        # Javobni saqlash
-        question_key = data_manager.get_current_question(user.id)
-        answer = ", ".join(selected)
-        
-        user_info = {
-            'username': user.effective_user.username,
-            'first_name': user.effective_user.first_name,
-            'language_code': user.effective_user.language_code
-        }
-        
-        data_manager.save_answer(user.id, question_key, answer, user_info)
-        
-        # Tozalash
-        context.bot_data['multi_choices'][user.id] = []
-        
-        # Keyingi savol yoki tahlil
-        if data_manager.is_completed(user.id):
-            await show_completion_callback(query, user.id)
+        else:
+            await show_completion(update, user.id)
             return ConversationHandler.END
-        else:
-            next_question = data_manager.get_current_question(user.id)
-            
-            # Yangi savol uchun oddiy xabar
-            question_data = config.QUESTIONS[next_question]
-            question_text = question_data['text']
-            
-            current_index = config.QUESTION_ORDER.index(next_question)
-            total = len(config.QUESTION_ORDER)
-            progress = f"[{current_index + 1}/{total}]"
-            
-            await query.message.reply_text(
-                f"{progress}\n\n{question_text}",
-                parse_mode='Markdown'
-            )
-            
-            return ANSWERING
 
-async def show_completion(update: Update, user_id: int):
-    """So'rovnoma tugagach AI tahlil ko'rsatish"""
-    await update.message.reply_text(config.TEXTS['all_complete'])
+async def show_completion(update_or_query, user_id: int):
+    """Show AI analysis after completion"""
+    # Send waiting message
+    message = update_or_query.message if hasattr(update_or_query, 'message') else update_or_query
     
-    # AI tahlil
+    await message.reply_text(get_text(user_id, 'all_complete'))
+    
+    # Get user data
     user_data = data_manager.load_user_data(user_id)
     
     try:
+        # Generate AI analysis
         analysis = ai_analyzer.analyze_financial_data(user_data)
         
-        # Tahlilni saqlash
+        # Save analysis
         data_manager.save_ai_analysis(user_id, analysis)
         
-        # Tahlilni yuborish (bo'laklarga bo'lib)
+        # Send analysis in chunks
         chunks = utils.split_text_into_chunks(analysis)
         
         for i, chunk in enumerate(chunks):
             if i == 0:
-                await update.message.reply_text(
-                    "🤖 **SIZNING SHAXSIY MOLIYAVIY TAHLILIZNGIZ:**\n\n" + chunk,
+                await message.reply_text(
+                    "🤖 **SIZNING MOLIYAVIY TAHLILIZNGIZ:**\n\n" + chunk,
                     parse_mode='Markdown'
                 )
             else:
-                await update.message.reply_text(chunk, parse_mode='Markdown')
+                await message.reply_text(chunk, parse_mode='Markdown')
         
-        # Yakuniy xabar
-        await update.message.reply_text(
-            "✅ Tahliz tugadi!\n\n"
-            "Yana yangi tahlil olish uchun /start bosing.",
-            reply_markup=ReplyKeyboardRemove()
+        # Final buttons
+        keyboard = [config.FINAL_BUTTONS['uz']]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        await message.reply_text(
+            get_text(user_id, 'final_buttons'),
+            reply_markup=reply_markup
         )
         
     except Exception as e:
-        logger.error(f"AI tahlil xatosi: {e}")
-        await update.message.reply_text(
-            "❌ Tahlilni yaratishda xatolik yuz berdi.\n"
-            "Iltimos, keyinroq qayta urinib ko'ring yoki /start bosing."
-        )
-
-async def show_completion_callback(query, user_id: int):
-    """Callback query orqali tugallash"""
-    await query.message.reply_text(config.TEXTS['all_complete'])
-    
-    user_data = data_manager.load_user_data(user_id)
-    
-    try:
-        analysis = ai_analyzer.analyze_financial_data(user_data)
-        data_manager.save_ai_analysis(user_id, analysis)
-        
-        chunks = utils.split_text_into_chunks(analysis)
-        
-        for i, chunk in enumerate(chunks):
-            if i == 0:
-                await query.message.reply_text(
-                    "🤖 **SIZNING SHAXSIY MOLIYAVIY TAHLILIZNGIZ:**\n\n" + chunk,
-                    parse_mode='Markdown'
-                )
-            else:
-                await query.message.reply_text(chunk, parse_mode='Markdown')
-        
-        await query.message.reply_text(
-            "✅ Tahliz tugadi!\n\n"
-            "Yana yangi tahlil olish uchun /start bosing.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        
-    except Exception as e:
-        logger.error(f"AI tahlil xatosi: {e}")
-        await query.message.reply_text(
-            "❌ Tahlilni yaratishda xatolik yuz berdi.\n"
-            "Iltimos, keyinroq qayta urinib ko'ring yoki /start bosing."
-        )
+        logger.error(f"AI analysis error: {e}")
+        await message.reply_text(get_text(user_id, 'error'))
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bekor qilish"""
+    """Cancel conversation"""
     await update.message.reply_text(
         "So'rovnoma bekor qilindi. Qayta boshlash uchun /start bosing.",
         reply_markup=ReplyKeyboardRemove()
@@ -360,61 +441,36 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Yordam"""
+    """Help command"""
     help_text = """
 🤖 **Moliyaviy Tahlil Boti**
 
-Bu bot sizning moliyaviy holatizngizni tahlil qiladi va shaxsiy tavsiyalar beradi.
+✅ 14 ta oddiy savol
+✅ AI tahlil va tavsiyalar
+✅ Dollar qo'llab-quvvatlash
+✅ Inline tugmalar
 
 **Buyruqlar:**
-/start - Botni boshlash
+/start - Boshlash
 /help - Yordam
-/cancel - So'rovnomani bekor qilish
-
-**Qanday ishlaydi?**
-1. Bot sizga moliyaviy savolar beradi
-2. Siz javob berasiz
-3. Oxirida AI tahlil va tavsiyalar olasiz
-
-**Savollar:**
-- Daromadingiz haqida
-- Xarajatlarizngiz haqida
-- Jamg'arma va qarzlaringiz
-- Maqsad va rejalaringiz
+/cancel - Bekor qilish
 
 Tayyor bo'lsangiz /start bosing! 🚀
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Statistika (admin uchun)"""
-    stats = data_manager.get_user_stats()
-    
-    stats_text = f"""
-📊 **Bot Statistikasi**
-
-👥 Jami foydalanuvchilar: {stats['total_users']}
-✅ To'ldirilgan: {stats['completed_surveys']}
-⏳ Jarayonda: {stats['in_progress']}
-    """
-    
-    await update.message.reply_text(stats_text, parse_mode='Markdown')
-
 def main():
-    """Botni ishga tushirish"""
+    """Start the bot"""
     
     if not config.TELEGRAM_BOT_TOKEN:
         print("❌ TELEGRAM_BOT_TOKEN topilmadi!")
-        print("📝 .env faylida TELEGRAM_BOT_TOKEN ni kiriting")
         return
     
     if not config.ANTHROPIC_API_KEY:
         print("⚠️ ANTHROPIC_API_KEY topilmadi!")
-        print("📝 .env faylida ANTHROPIC_API_KEY ni kiriting")
-        print("🔗 https://console.anthropic.com dan API key oling")
         return
     
-    # Bot yaratish
+    # Create application
     application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
     
     # Conversation handler
@@ -422,19 +478,18 @@ def main():
         entry_points=[CommandHandler('start', start)],
         states={
             ANSWERING: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer),
-                CallbackQueryHandler(handle_multi_choice),
+                CallbackQueryHandler(handle_callback),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_answer),
             ],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
     
-    # Handlerlarni qo'shish
+    # Add handlers
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler('help', help_command))
-    application.add_handler(CommandHandler('stats', stats_command))
     
-    # Botni ishga tushirish
+    # Start bot
     print("🤖 Bot ishga tushdi!")
     print("📊 Foydalanuvchilar bilan suhbatlashishni boshlang...")
     
